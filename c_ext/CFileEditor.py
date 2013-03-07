@@ -6,8 +6,8 @@ import wx.stc as stc
 import wx.lib.buttons
 
 from controls import CustomGrid, CustomTable
-from ConfTreeNodeEditor import ConfTreeNodeEditor
-from utils.BitmapLibrary import GetBitmap
+from editors.ConfTreeNodeEditor import ConfTreeNodeEditor, SCROLLBAR_UNIT
+from util.BitmapLibrary import GetBitmap
 
 if wx.Platform == '__WXMSW__':
     faces = { 'times': 'Times New Roman',
@@ -74,7 +74,7 @@ class CppEditor(stc.StyledTextCtrl):
     
     def __init__(self, parent, name, window, controler):
         stc.StyledTextCtrl.__init__(self, parent, ID_CPPEDITOR, wx.DefaultPosition, 
-                 wx.Size(0, 0), 0)
+                 wx.Size(-1, 300), 0)
 
         self.SetMarginType(1, stc.STC_MARGIN_NUMBER)
         self.SetMarginWidth(1, 25)
@@ -493,88 +493,39 @@ class VariablesTable(CustomTable):
                 
                 grid.SetCellBackgroundColour(row, col, wx.WHITE)
             self.ResizeRow(grid, row)
-    
 
-[ID_VARIABLESEDITOR, ID_VARIABLESEDITORVARIABLESGRID,
- ID_VARIABLESEDITORADDVARIABLEBUTTON, ID_VARIABLESEDITORDELETEVARIABLEBUTTON, 
- ID_VARIABLESEDITORUPVARIABLEBUTTON, ID_VARIABLESEDITORDOWNVARIABLEBUTTON
-] = [wx.NewId() for _init_ctrls in range(6)]
 
 class VariablesEditor(wx.Panel):
     
-    if wx.VERSION < (2, 6, 0):
-        def Bind(self, event, function, id = None):
-            if id is not None:
-                event(self, id, function)
-            else:
-                event(self, function)
-    
-    def _init_coll_MainSizer_Growables(self, parent):
-        parent.AddGrowableCol(0)
-        parent.AddGrowableRow(0)
-
-    def _init_coll_MainSizer_Items(self, parent):
-        parent.AddWindow(self.VariablesGrid, 0, border=0, flag=wx.GROW)
-        parent.AddSizer(self.ButtonsSizer, 0, border=0, flag=wx.GROW)
-
-    def _init_coll_ButtonsSizer_Growables(self, parent):
-        parent.AddGrowableCol(0)
-        parent.AddGrowableRow(0)
-
-    def _init_coll_ButtonsSizer_Items(self, parent):
-        parent.AddWindow(self.AddVariableButton, 0, border=0, flag=wx.ALIGN_RIGHT)
-        parent.AddWindow(self.DeleteVariableButton, 0, border=0, flag=0)
-        parent.AddWindow(self.UpVariableButton, 0, border=0, flag=0)
-        parent.AddWindow(self.DownVariableButton, 0, border=0, flag=0)
-
-    def _init_sizers(self):
-        self.MainSizer = wx.FlexGridSizer(cols=1, hgap=0, rows=2, vgap=4)
-        self.ButtonsSizer = wx.FlexGridSizer(cols=5, hgap=5, rows=1, vgap=0)
-        
-        self._init_coll_MainSizer_Growables(self.MainSizer)
-        self._init_coll_MainSizer_Items(self.MainSizer)
-        self._init_coll_ButtonsSizer_Growables(self.ButtonsSizer)
-        self._init_coll_ButtonsSizer_Items(self.ButtonsSizer)
-        
-        self.SetSizer(self.MainSizer)
-
-    def _init_ctrls(self, prnt):
-        wx.Panel.__init__(self, id=ID_VARIABLESEDITOR, name='', parent=prnt,
-              size=wx.Size(0, 0), style=wx.TAB_TRAVERSAL)
-        
-        self.VariablesGrid = CustomGrid(id=ID_VARIABLESEDITORVARIABLESGRID,
-              name='VariablesGrid', parent=self, pos=wx.Point(0, 0), 
-              size=wx.Size(-1, -1), style=wx.VSCROLL)
-        if wx.VERSION >= (2, 5, 0):
-            self.VariablesGrid.Bind(wx.grid.EVT_GRID_CELL_CHANGE, self.OnVariablesGridCellChange)
-            self.VariablesGrid.Bind(wx.grid.EVT_GRID_CELL_LEFT_CLICK, self.OnVariablesGridCellLeftClick)
-            self.VariablesGrid.Bind(wx.grid.EVT_GRID_EDITOR_SHOWN, self.OnVariablesGridEditorShown)
-        else:
-            wx.grid.EVT_GRID_CELL_CHANGE(self.VariablesGrid, self.OnVariablesGridCellChange)
-            wx.grid.EVT_GRID_CELL_LEFT_CLICK(self.VariablesGrid, self.OnVariablesGridCellLeftClick)
-            wx.grid.EVT_GRID_EDITOR_SHOWN(self.VariablesGrid, self.OnVariablesGridEditorShown)
-        
-        self.AddVariableButton = wx.Button(id=ID_VARIABLESEDITORADDVARIABLEBUTTON, label='Add Variable',
-              name='AddVariableButton', parent=self, pos=wx.Point(0, 0),
-              size=wx.Size(122, 32), style=0)
-        
-        self.DeleteVariableButton = wx.Button(id=ID_VARIABLESEDITORDELETEVARIABLEBUTTON, label='Delete Variable',
-              name='DeleteVariableButton', parent=self, pos=wx.Point(0, 0),
-              size=wx.Size(122, 32), style=0)
-        
-        self.UpVariableButton = wx.Button(id=ID_VARIABLESEDITORUPVARIABLEBUTTON, label='^',
-              name='UpVariableButton', parent=self, pos=wx.Point(0, 0),
-              size=wx.Size(32, 32), style=0)
-        
-        self.DownVariableButton = wx.Button(id=ID_VARIABLESEDITORDOWNVARIABLEBUTTON, label='v',
-              name='DownVariableButton', parent=self, pos=wx.Point(0, 0),
-              size=wx.Size(32, 32), style=0)
-        
-        self._init_sizers()
-
     def __init__(self, parent, window, controler):
-        self._init_ctrls(parent)
+        wx.Panel.__init__(self, parent, style=wx.TAB_TRAVERSAL)
         
+        main_sizer = wx.FlexGridSizer(cols=1, hgap=0, rows=2, vgap=4)
+        main_sizer.AddGrowableCol(0)
+        main_sizer.AddGrowableRow(0)
+        
+        self.VariablesGrid = CustomGrid(self, size=wx.Size(-1, 300), style=wx.VSCROLL)
+        self.VariablesGrid.Bind(wx.grid.EVT_GRID_CELL_CHANGE, self.OnVariablesGridCellChange)
+        self.VariablesGrid.Bind(wx.grid.EVT_GRID_CELL_LEFT_CLICK, self.OnVariablesGridCellLeftClick)
+        self.VariablesGrid.Bind(wx.grid.EVT_GRID_EDITOR_SHOWN, self.OnVariablesGridEditorShown)
+        main_sizer.AddWindow(self.VariablesGrid, flag=wx.GROW)
+        
+        controls_sizer = wx.BoxSizer(wx.HORIZONTAL)
+        main_sizer.AddSizer(controls_sizer, border=5, flag=wx.TOP|wx.ALIGN_RIGHT)
+        
+        for name, bitmap, help in [
+                ("AddVariableButton", "add_element", _("Add variable")),
+                ("DeleteVariableButton", "remove_element", _("Remove variable")),
+                ("UpVariableButton", "up", _("Move variable up")),
+                ("DownVariableButton", "down", _("Move variable down"))]:
+            button = wx.lib.buttons.GenBitmapButton(self, bitmap=GetBitmap(bitmap), 
+                  size=wx.Size(28, 28), style=wx.NO_BORDER)
+            button.SetToolTipString(help)
+            setattr(self, name, button)
+            controls_sizer.AddWindow(button, border=5, flag=wx.LEFT)
+        
+        self.SetSizer(main_sizer)
+                
         self.ParentWindow = window
         self.Controler = controler
         
@@ -703,6 +654,7 @@ class VariablesEditor(wx.Panel):
             dragSource = wx.DropSource(self.VariablesGrid)
             dragSource.SetData(data)
             dragSource.DoDragDrop()
+            return
         event.Skip()
     
 
@@ -773,46 +725,41 @@ class FoldPanelCaption(wx.lib.buttons.GenBitmapTextToggleButton):
         dc.SetBrush(wx.TRANSPARENT_BRUSH)
         dc.DrawRectangle(0, 0, width, height)
 
-[ID_CFILEEDITOR, ID_CFILEEDITORMAINSPLITTER, 
- ID_CFILEEDITORCFILETREE, ID_CFILEEDITORPARTSOPENED, 
-] = [wx.NewId() for _init_ctrls in range(4)]
-
 class CFileEditor(ConfTreeNodeEditor):
     
-    def _init_ConfNodeEditor(self, prnt):
-        self.ConfNodeEditor = wx.Panel(id=ID_CFILEEDITOR, parent=prnt, pos=wx.Point(0, 0), 
-                size=wx.Size(0, 0), style=wx.TAB_TRAVERSAL)
+    CONFNODEEDITOR_TABS = [
+        (_("C code"), "_create_CCodeEditor")]
+    
+    def _create_CCodeEditor(self, prnt):
+        self.CCodeEditor = wx.ScrolledWindow(prnt, 
+              style=wx.TAB_TRAVERSAL|wx.HSCROLL|wx.VSCROLL)
+        self.CCodeEditor.Bind(wx.EVT_SIZE, self.OnCCodeEditorResize)
         
         self.Panels = {}
-        self.MainSizer = wx.FlexGridSizer(cols=1, hgap=0, rows=2 * len(CFILE_PARTS) + 1, vgap=0)
-        self.MainSizer.AddGrowableCol(0)
+        self.MainSizer = wx.BoxSizer(wx.VERTICAL)
         
         for idx, (name, panel_class) in enumerate(CFILE_PARTS):
             button_id = wx.NewId()
             button = FoldPanelCaption(id=button_id, name='FoldPanelCaption_%s' % name, 
                   label=name, bitmap=GetBitmap("CollapsedIconData"), 
-                  parent=self.ConfNodeEditor, pos=wx.Point(0, 0),
+                  parent=self.CCodeEditor, pos=wx.Point(0, 0),
                   size=wx.Size(0, 20), style=wx.NO_BORDER|wx.ALIGN_LEFT)
             button.SetBitmapSelected(GetBitmap("ExpandedIconData"))
             button.Bind(wx.EVT_BUTTON, self.GenPanelButtonCallback(name), id=button_id)
             self.MainSizer.AddWindow(button, 0, border=0, flag=wx.TOP|wx.GROW)
             
             if panel_class == VariablesEditor:
-                panel = VariablesEditor(self.ConfNodeEditor, self.ParentWindow, self.Controler)
+                panel = VariablesEditor(self.CCodeEditor, self.ParentWindow, self.Controler)
             else:
-                panel = panel_class(self.ConfNodeEditor, name, self.ParentWindow, self.Controler)
+                panel = panel_class(self.CCodeEditor, name, self.ParentWindow, self.Controler)
             self.MainSizer.AddWindow(panel, 0, border=0, flag=wx.BOTTOM|wx.GROW)
             panel.Hide()
             
             self.Panels[name] = {"button": button, "panel": panel, "expanded": False, "row": 2 * idx + 1}
         
-        self.Spacer = wx.Panel(self.ConfNodeEditor, -1)
-        self.SpacerExpanded = True
-        self.MainSizer.AddWindow(self.Spacer, 0, border=0, flag=wx.GROW)
+        self.CCodeEditor.SetSizer(self.MainSizer)
         
-        self.MainSizer.AddGrowableRow(2 * len(CFILE_PARTS))
-        
-        self.ConfNodeEditor.SetSizer(self.MainSizer)
+        return self.CCodeEditor
     
     def __init__(self, parent, controler, window):
         ConfTreeNodeEditor.__init__(self, parent, controler, window)
@@ -833,6 +780,8 @@ class CFileEditor(ConfTreeNodeEditor):
         
         for infos in self.Panels.itervalues():
             infos["panel"].RefreshView()
+        
+        self.RefreshCCodeEditorScrollbars()
 
     def GenPanelButtonCallback(self, name):
         def PanelButtonCallback(event):
@@ -845,8 +794,7 @@ class CFileEditor(ConfTreeNodeEditor):
             infos["expanded"] = True
             infos["button"].SetToggle(True)
             infos["panel"].Show()
-            self.MainSizer.AddGrowableRow(infos["row"])
-        
+            
             self.RefreshSizerLayout()
     
     def CollapsePanel(self, name):
@@ -855,8 +803,7 @@ class CFileEditor(ConfTreeNodeEditor):
             infos["expanded"] = False
             infos["button"].SetToggle(False)
             infos["panel"].Hide()
-            self.MainSizer.RemoveGrowableRow(infos["row"])
-        
+            
             self.RefreshSizerLayout()
         
     def TogglePanel(self, name):
@@ -866,26 +813,27 @@ class CFileEditor(ConfTreeNodeEditor):
             infos["button"].SetToggle(infos["expanded"])
             if infos["expanded"]:
                 infos["panel"].Show()
-                self.MainSizer.AddGrowableRow(infos["row"])
             else:
                 infos["panel"].Hide()
-                self.MainSizer.RemoveGrowableRow(infos["row"])
             
             self.RefreshSizerLayout()
     
     def RefreshSizerLayout(self):
-        expand_spacer = True
-        for infos in self.Panels.itervalues():
-            expand_spacer = expand_spacer and not infos["expanded"]
-        
-        if self.SpacerExpanded != expand_spacer:
-            self.SpacerExpanded = expand_spacer
-            if expand_spacer:
-                self.Spacer.Show()
-                self.MainSizer.AddGrowableRow(2 * len(CFILE_PARTS))
-            else:
-                self.Spacer.Hide()
-                self.MainSizer.RemoveGrowableRow(2 * len(CFILE_PARTS))
-        
         self.MainSizer.Layout()
-            
+        self.RefreshCCodeEditorScrollbars()
+    
+    def RefreshCCodeEditorScrollbars(self):
+        self.CCodeEditor.GetBestSize()
+        xstart, ystart = self.CCodeEditor.GetViewStart()
+        window_size = self.CCodeEditor.GetClientSize()
+        maxx, maxy = self.MainSizer.GetMinSize()
+        posx = max(0, min(xstart, (maxx - window_size[0]) / SCROLLBAR_UNIT))
+        posy = max(0, min(ystart, (maxy - window_size[1]) / SCROLLBAR_UNIT))
+        self.CCodeEditor.Scroll(posx, posy)
+        self.CCodeEditor.SetScrollbars(SCROLLBAR_UNIT, SCROLLBAR_UNIT, 
+                maxx / SCROLLBAR_UNIT, maxy / SCROLLBAR_UNIT, posx, posy)
+    
+    def OnCCodeEditorResize(self, event):
+        self.RefreshCCodeEditorScrollbars()
+        event.Skip()
+    

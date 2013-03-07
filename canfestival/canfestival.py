@@ -1,7 +1,10 @@
 import os, sys
+
 base_folder = os.path.split(sys.path[0])[0]
 CanFestivalPath = os.path.join(base_folder, "CanFestival-3")
 sys.path.append(os.path.join(CanFestivalPath, "objdictgen"))
+
+import wx
 
 from nodelist import NodeList
 from nodemanager import NodeManager
@@ -11,7 +14,6 @@ from objdictedit import objdictedit
 import canfestival_config as local_canfestival_config
 from ConfigTreeNode import ConfigTreeNode
 from commondialogs import CreateNodeDialog
-import wx
 
 from SlaveEditor import SlaveEditor, MasterViewer
 from NetworkEditor import NetworkEditor
@@ -20,22 +22,8 @@ from gnosis.xml.pickle import *
 from gnosis.xml.pickle.util import setParanoia
 setParanoia(0)
 
-if wx.Platform == '__WXMSW__':
-    DEFAULT_SETTINGS = {
-        "CAN_Driver": "can_tcp_win32",
-        "CAN_Device": "127.0.0.1",
-        "CAN_Baudrate": "125K",
-        "Slave_NodeId": 2,
-        "Master_NodeId": 1,
-    }
-else:
-    DEFAULT_SETTINGS = {
-        "CAN_Driver": "../CanFestival-3/drivers/can_socket/libcanfestival_can_socket.so",
-        "CAN_Device": "vcan0",
-        "CAN_Baudrate": "125K",
-        "Slave_NodeId": 2,
-        "Master_NodeId": 1,
-    }
+from util.TranslationCatalogs import AddCatalog
+AddCatalog(os.path.join(CanFestivalPath, "objdictgen", "locale"))
 
 #--------------------------------------------------
 #                    SLAVE
@@ -46,9 +34,9 @@ class _SlaveCTN(NodeManager):
     <xsd:schema xmlns:xsd="http://www.w3.org/2001/XMLSchema">
       <xsd:element name="CanFestivalSlaveNode">
         <xsd:complexType>
-          <xsd:attribute name="CAN_Device" type="xsd:string" use="optional" default="%(CAN_Device)s"/>
-          <xsd:attribute name="CAN_Baudrate" type="xsd:string" use="optional" default="%(CAN_Baudrate)s"/>
-          <xsd:attribute name="NodeId" type="xsd:string" use="optional" default="%(Slave_NodeId)d"/>
+          <xsd:attribute name="CAN_Device" type="xsd:string" use="optional"/>
+          <xsd:attribute name="CAN_Baudrate" type="xsd:string" use="optional"/>
+          <xsd:attribute name="NodeId" type="xsd:integer" use="optional" default="2"/>
           <xsd:attribute name="Sync_Align" type="xsd:integer" use="optional" default="0"/>
           <xsd:attribute name="Sync_Align_Ratio" use="optional" default="50">
             <xsd:simpleType>
@@ -61,7 +49,7 @@ class _SlaveCTN(NodeManager):
         </xsd:complexType>
       </xsd:element>
     </xsd:schema>
-    """ % DEFAULT_SETTINGS
+    """
     
     EditorType = SlaveEditor
     IconPath = os.path.join(CanFestivalPath, "objdictgen", "networkedit.png")
@@ -102,11 +90,14 @@ class _SlaveCTN(NodeManager):
             dialog.Destroy()
             self.OnCTNSave()
 
+    def GetCurrentNodeName(self):
+        return self.CTNName()
+
     def GetSlaveODPath(self):
         return os.path.join(self.CTNPath(), 'slave.od')
 
     def GetCanDevice(self):
-        return self.CanFestivalSlaveNode.getCan_Device()
+        return self.CanFestivalSlaveNode.getCAN_Device()
 
     def _OpenView(self, name=None, onlyopened=False):
         ConfigTreeNode._OpenView(self, name, onlyopened)
@@ -115,7 +106,12 @@ class _SlaveCTN(NodeManager):
         return self._View
     
     def _ExportSlave(self):
-        dialog = wx.FileDialog(self.GetCTRoot().AppFrame, _("Choose a file"), os.getcwd(), "",  _("EDS files (*.eds)|*.eds|All files|*.*"), wx.SAVE|wx.OVERWRITE_PROMPT)
+        dialog = wx.FileDialog(self.GetCTRoot().AppFrame, 
+                               _("Choose a file"), 
+                               os.path.expanduser("~"), 
+                               "%s.eds" % self.CTNName(),  
+                               _("EDS files (*.eds)|*.eds|All files|*.*"),
+                               wx.SAVE|wx.OVERWRITE_PROMPT)
         if dialog.ShowModal() == wx.ID_OK:
             result = eds_utils.GenerateEDSFile(dialog.GetPath(), self.GetCurrentNodeCopy())
             if result:
@@ -214,43 +210,74 @@ class MiniNodeManager(NodeManager):
     
     ConfNodeMethods = []
 
+class _NodeManager(NodeManager):
+
+    def __init__(self, parent, *args, **kwargs):
+        NodeManager.__init__(self, *args, **kwargs)
+        self.Parent = parent
+        
+    def __del__(self):
+        self.Parent = None
+        
+    def GetCurrentNodeName(self):
+        return self.Parent.CTNName()
+    
+    def GetCurrentNodeID(self):
+        return self.Parent.CanFestivalNode.getNodeId()
+    
 class _NodeListCTN(NodeList):
     XSD = """<?xml version="1.0" encoding="ISO-8859-1" ?>
     <xsd:schema xmlns:xsd="http://www.w3.org/2001/XMLSchema">
       <xsd:element name="CanFestivalNode">
         <xsd:complexType>
-          <xsd:attribute name="CAN_Device" type="xsd:string" use="optional" default="%(CAN_Device)s"/>
-          <xsd:attribute name="CAN_Baudrate" type="xsd:string" use="optional" default="%(CAN_Baudrate)s"/>
-          <xsd:attribute name="NodeId" type="xsd:string" use="optional" default="%(Master_NodeId)d"/>
+          <xsd:attribute name="CAN_Device" type="xsd:string" use="optional"/>
+          <xsd:attribute name="CAN_Baudrate" type="xsd:string" use="optional"/>
+          <xsd:attribute name="NodeId" type="xsd:integer" use="optional" default="1"/>
           <xsd:attribute name="Sync_TPDOs" type="xsd:boolean" use="optional" default="true"/>
         </xsd:complexType>
       </xsd:element>
     </xsd:schema>
-    """ % DEFAULT_SETTINGS
+    """ 
     
     EditorType = NetworkEditor
     IconPath = os.path.join(CanFestivalPath, "objdictgen", "networkedit.png")
     
     def __init__(self):
-        manager = NodeManager()
+        manager = _NodeManager(self)
         NodeList.__init__(self, manager)
         self.LoadProject(self.CTNPath())
         self.SetNetworkName(self.BaseParams.getName())
     
     def GetCanDevice(self):
-        return self.CanFestivalNode.getCan_Device()
+        return self.CanFestivalNode.getCAN_Device()
     
     def SetParamsAttribute(self, path, value):
-        result = ConfigTreeNode.SetParamsAttribute(self, path, value)
+        if path == "CanFestivalNode.NodeId":
+            nodeid = self.CanFestivalNode.getNodeId()
+            if value != nodeid:
+                slaves = self.GetSlaveIDs()
+                dir = (value - nodeid) / abs(value - nodeid)
+                while value in slaves and value >= 0:
+                    value += dir
+                if value < 0:
+                    value = nodeid
+        
+        value, refresh = ConfigTreeNode.SetParamsAttribute(self, path, value)
+        refresh_network = False
         
         # Filter IEC_Channel and Name, that have specific behavior
         if path == "BaseParams.IEC_Channel" and self._View is not None:
             self._View.SetBusId(self.GetCurrentLocation())
         elif path == "BaseParams.Name":
             self.SetNetworkName(value)
+            refresh_network = True
+        elif path == "CanFestivalNode.NodeId":
+            refresh_network = True
+            
+        if refresh_network and self._View is not None:
+            wx.CallAfter(self._View.RefreshBufferState)
+        return value, refresh
         
-        return result
-    
     _GeneratedMasterView = None
     def _ShowGeneratedMaster(self):
         self._OpenView("Generated master")
@@ -270,11 +297,11 @@ class _NodeListCTN(NodeList):
                     self.GetCTRoot().logger.write_error(_("Error: No Master generated\n"))
                     return
                 
-                manager = MiniNodeManager(self, masterpath, self.CTNFullName() + ".generated_master")
-                self._GeneratedMasterView = MasterViewer(app_frame.TabsOpened, manager, app_frame)
+                manager = MiniNodeManager(self, masterpath, self.CTNFullName())
+                self._GeneratedMasterView = MasterViewer(app_frame.TabsOpened, manager, app_frame, name)
                 
             if self._GeneratedMasterView is not None:
-                app_frame.EditProjectElement(self._GeneratedMasterView, name)
+                app_frame.EditProjectElement(self._GeneratedMasterView, self._GeneratedMasterView.GetInstancePath())
             
             return self._GeneratedMasterView
         else:
@@ -355,39 +382,32 @@ class RootClass:
     <xsd:schema xmlns:xsd="http://www.w3.org/2001/XMLSchema">
       <xsd:element name="CanFestivalInstance">
         <xsd:complexType>
-          <xsd:attribute name="CAN_Driver" type="xsd:string" use="optional" default="%(CAN_Driver)s"/>
-          <xsd:attribute name="Debug_mode" type="xsd:boolean" use="optional" default="false"/>
+          <xsd:attribute name="CAN_Driver" type="xsd:string" use="optional"/>
         </xsd:complexType>
       </xsd:element>
     </xsd:schema>
-    """ % DEFAULT_SETTINGS
+    """
     
     CTNChildrenTypes = [("CanOpenNode",_NodeListCTN, "CanOpen Master"),
                        ("CanOpenSlave",_SlaveCTN, "CanOpen Slave")]
     def GetParamsAttributes(self, path = None):
-        infos = ConfigTreeNode.GetParamsAttributes(self, path = None)
+        infos = ConfigTreeNode.GetParamsAttributes(self, path = path)
         for element in infos:
             if element["name"] == "CanFestivalInstance":
                 for child in element["children"]:
                     if child["name"] == "CAN_Driver":
-                        DLL_LIST= getattr(local_canfestival_config,"DLL_LIST",None)
-                        if DLL_LIST is not None:
-                            child["type"] = DLL_LIST  
+                        child["type"] = local_canfestival_config.DLL_LIST
         return infos
     
-    def GetCanDriver(self):
-        can_driver = self.CanFestivalInstance.getCAN_Driver()
-        if sys.platform == 'win32':
-            if self.CanFestivalInstance.getDebug_mode() and os.path.isfile(os.path.join("%s"%(can_driver + '_DEBUG.dll'))):
-                can_driver += '_DEBUG.dll'
-            else:
-                can_driver += '.dll'
-        return can_driver
-    
     def CTNGenerate_C(self, buildpath, locations):
+        can_driver = self.CanFestivalInstance.getCAN_Driver()
+        if not can_driver :
+            can_driver = local_canfestival_config.DLL_LIST[0]
+        can_drv_ext = self.GetCTRoot().GetBuilder().extension
+        can_driver_name = "libcanfestival_" + can_driver + can_drv_ext
         
         format_dict = {"locstr" : "_".join(map(str,self.GetCurrentLocation())),
-                       "candriver" : self.GetCanDriver(),
+                       "candriver" : can_driver_name,
                        "nodes_includes" : "",
                        "board_decls" : "",
                        "nodes_init" : "",
@@ -478,7 +498,12 @@ class RootClass:
         f = open(cf_main_path,'w')
         f.write(cf_main)
         f.close()
-        
-        return [(cf_main_path, local_canfestival_config.getCFLAGS(CanFestivalPath))],local_canfestival_config.getLDFLAGS(CanFestivalPath), True
 
+        res = [(cf_main_path, local_canfestival_config.getCFLAGS(CanFestivalPath))],local_canfestival_config.getLDFLAGS(CanFestivalPath), True
+
+        can_driver_path = os.path.join(CanFestivalPath,"drivers",can_driver,can_driver_name)
+        if os.path.exists(can_driver_path):
+            res += ((can_driver_name, file(can_driver_path,"rb")),)
+
+        return res
 

@@ -14,22 +14,23 @@ from weakref import WeakKeyDictionary
 
 import targets
 import connectors
-from util.misc import CheckPathPerm, GetClassImporter, IECCodeViewer
+from util.misc import CheckPathPerm, GetClassImporter
 from util.MiniTextControler import MiniTextControler
 from util.ProcessLogger import ProcessLogger
-from util.FileManagementPanel import FileManagementPanel
+from util.BitmapLibrary import GetBitmap
+from editors.FileManagementPanel import FileManagementPanel
+from editors.ProjectNodeEditor import ProjectNodeEditor
+from editors.IECCodeViewer import IECCodeViewer
+from graphics import DebugViewer
+from dialogs import DiscoveryDialog
 from PLCControler import PLCControler
-from TextViewer import TextViewer
 from plcopen.structures import IEC_KEYWORDS
-from targets.typemapping import DebugTypesSize
-from util.discovery import DiscoveryDialog
+from targets.typemapping import DebugTypesSize, LogLevelsCount, LogLevels
 from ConfigTreeNode import ConfigTreeNode
-from ProjectNodeEditor import ProjectNodeEditor
-from utils.BitmapLibrary import GetBitmap
 
 base_folder = os.path.split(sys.path[0])[0]
 
-MATIEC_ERROR_MODEL = re.compile(".*\.st:(\d+)-(\d+)\.\.(\d+)-(\d+): error : (.*)$")
+MATIEC_ERROR_MODEL = re.compile(".*\.st:(\d+)-(\d+)\.\.(\d+)-(\d+): (?:error)|(?:warning) : (.*)$")
 
 DEBUG_RETRIES_WARN = 3
 DEBUG_RETRIES_REREGISTER = 4
@@ -112,6 +113,7 @@ class ProjectController(ConfigTreeNode, PLCControler):
         self.DebugThread = None
         self.debug_break = False
         self.previous_plcstate = None
+        self.previous_log_count = [None]*LogLevelsCount
         # copy ConfNodeMethods so that it can be later customized
         self.StatusMethods = [dic.copy() for dic in self.StatusMethods]
 
@@ -237,6 +239,10 @@ class ProjectController(ConfigTreeNode, PLCControler):
             os.mkdir(projectfiles_path)
         return projectfiles_path
     
+    def AddProjectDefaultConfiguration(self, config_name="config", res_name="resource1"):
+        self.ProjectAddConfiguration(config_name)
+        self.ProjectAddConfigurationResource(config_name, res_name)
+
     def NewProject(self, ProjectPath, BuildPath=None):
         """
         Create a new project in an empty folder
@@ -254,8 +260,7 @@ class ProjectController(ConfigTreeNode, PLCControler):
              "productVersion": "1",
              "companyName": _("Unknown"),
              "creationDateTime": datetime(*localtime()[:6])})
-        self.ProjectAddConfiguration("config")
-        self.ProjectAddConfigurationResource("config", "resource1")
+        self.AddProjectDefaultConfiguration()
         
         # Change XSD into class members
         self._AddParamsMembers()
@@ -284,6 +289,8 @@ class ProjectController(ConfigTreeNode, PLCControler):
         result = self.OpenXMLFile(plc_file)
         if result:
             return result
+        if len(self.GetProjectConfigNames()) == 0:
+            self.AddProjectDefaultConfiguration()
         # Change XSD into class members
         self._AddParamsMembers()
         self.Children = {}
@@ -382,8 +389,8 @@ class ProjectController(ConfigTreeNode, PLCControler):
             res=lib.Generate_C(buildpath,self._VariablesList,LibIECCflags)  
             LocatedCCodeAndFlags.append(res[:2])
             if len(res)>2:
-                Extras.append(res[2:])
-        return map(list,zip(*LocatedCCodeAndFlags))+[tuple(*Extras)]
+                Extras.extend(res[2:])
+        return map(list,zip(*LocatedCCodeAndFlags))+[tuple(Extras)]
     
     # Update PLCOpenEditor ConfNode Block types from loaded confnodes
     def RefreshConfNodesBlockLists(self):
@@ -403,7 +410,7 @@ class ProjectController(ConfigTreeNode, PLCControler):
             self.AppFrame.RefreshPouInstanceVariablesPanel()
             self.AppFrame.RefreshFileMenu()
             self.AppFrame.RefreshEditMenu()
-            self.AppFrame.RefreshEditor()
+            wx.CallAfter(self.AppFrame.RefreshEditor)
     
     def GetVariableLocationTree(self):
         '''
@@ -498,7 +505,10 @@ class ProjectController(ConfigTreeNode, PLCControler):
                     # finally store into located variable list
                     locations.append(resdict)
         return locations
-        
+    
+    def GetConfNodeGlobalInstances(self):
+        return self._GlobalInstances()
+    
     def _Generate_SoftPLC(self):
         """
         Generate SoftPLC ST/IL/SFC code out of PLCOpenEditor controller, and compile it with IEC2C
@@ -692,15 +702,23 @@ class ProjectController(ConfigTreeNode, PLCControler):
                     self._ProgramList.append(attrs)
         
                 # second section contains all variables
+                config_FBs = {}
                 for line in ListGroup[1]:
                     # Split and Maps each field to dictionnary entries
                     attrs = dict(zip(VariablesListAttributeName,line.strip().split(';')))
                     # Truncate "C_path" to remove conf an ressources names
                     parts = attrs["C_path"].split(".",2)
                     if len(parts) > 2:
-                        attrs["C_path"] = '__'.join(parts[1:])
+                        config_FB = config_FBs.get(tuple(parts[:2]))
+                        if config_FB:
+                            parts = [config_FB] + parts[2:]
+                            attrs["C_path"] = '.'.join(parts)
+                        else: 
+                            attrs["C_path"] = '__'.join(parts[1:])
                     else:
                         attrs["C_path"] = '__'.join(parts)
+                        if attrs["vartype"] == "FB":
+                            config_FBs[tuple(parts)] = attrs["C_path"]
                     # Push this dictionnary into result.
                     self._VariablesList.append(attrs)
                     # Fill in IEC<->C translation dicts
@@ -736,18 +754,19 @@ class ProjectController(ConfigTreeNode, PLCControler):
                "IN":"extern __IEC_%(type)s_p %(C_path)s;",
                "MEM":"extern __IEC_%(type)s_p %(C_path)s;",
                "OUT":"extern __IEC_%(type)s_p %(C_path)s;",
-               "VAR":"extern __IEC_%(type)s_t %(C_path)s;"}[v["vartype"]]%v 
-               for v in self._VariablesList if v["vartype"] != "FB" and v["C_path"].find('.')<0]),
+               "VAR":"extern __IEC_%(type)s_t %(C_path)s;",
+               "FB":"extern %(type)s %(C_path)s;"}[v["vartype"]]%v 
+               for v in self._VariablesList if v["C_path"].find('.')<0]),
            "for_each_variable_do_code":"\n".join([
-               {"EXT":"    (*fp)((void*)&%(C_path)s,%(type)s_P_ENUM);\n",
-                "IN":"    (*fp)((void*)&%(C_path)s,%(type)s_P_ENUM);\n",
-                "MEM":"    (*fp)((void*)&%(C_path)s,%(type)s_O_ENUM);\n",
-                "OUT":"    (*fp)((void*)&%(C_path)s,%(type)s_O_ENUM);\n",
-                "VAR":"    (*fp)((void*)&%(C_path)s,%(type)s_ENUM);\n"}[v["vartype"]]%v
+               {"EXT":"    (*fp)((void*)&(%(C_path)s),%(type)s_P_ENUM);\n",
+                "IN":"    (*fp)((void*)&(%(C_path)s),%(type)s_P_ENUM);\n",
+                "MEM":"    (*fp)((void*)&(%(C_path)s),%(type)s_O_ENUM);\n",
+                "OUT":"    (*fp)((void*)&(%(C_path)s),%(type)s_O_ENUM);\n",
+                "VAR":"    (*fp)((void*)&(%(C_path)s),%(type)s_ENUM);\n"}[v["vartype"]]%v
                 for v in self._VariablesList if v["vartype"] != "FB" and v["type"] in DebugTypesSize ]),
            "find_variable_case_code":"\n".join([
                "    case %(num)s:\n"%v+
-               "        *varp = (void*)&%(C_path)s;\n"%v+
+               "        *varp = (void*)&(%(C_path)s);\n"%v+
                {"EXT":"        return %(type)s_P_ENUM;\n",
                 "IN":"        return %(type)s_P_ENUM;\n",
                 "MEM":"        return %(type)s_O_ENUM;\n",
@@ -856,7 +875,7 @@ class ProjectController(ConfigTreeNode, PLCControler):
         self.LocationCFilesAndCFLAGS =  CTNLocationCFilesAndCFLAGS + LibCFilesAndCFLAGS
         self.LDFLAGS = CTNLDFLAGS + LibLDFLAGS
         ExtraFiles = CTNExtraFiles + LibExtraFiles
-
+        
         # Get temporary directory path
         extrafilespath = self._getExtraFilesPath()
         # Remove old directory
@@ -923,7 +942,6 @@ class ProjectController(ConfigTreeNode, PLCControler):
         for infos, (start_row, start_col) in chunk_infos:
             start = (from_location[0] - start_row, from_location[1] - start_col)
             end = (to_location[0] - start_row, to_location[1] - start_col)
-            #print from_location, to_location, start_row, start_col, start, end
             if self.AppFrame is not None:
                 self.AppFrame.ShowError(infos, start, end)
     
@@ -937,7 +955,7 @@ class ProjectController(ConfigTreeNode, PLCControler):
     
     _ProjectFilesView = None
     def _OpenProjectFiles(self):
-        self._OpenView("Project files")
+        self._OpenView("Project Files")
     
     _FileEditors = {}
     def _OpenFileEditor(self, filepath):
@@ -980,7 +998,7 @@ class ProjectController(ConfigTreeNode, PLCControler):
             
             return self._IECRawCodeView
         
-        elif name == "Project files":
+        elif name == "Project Files":
             if self._ProjectFilesView is None:
                 self._ProjectFilesView = FileManagementPanel(self.AppFrame.TabsOpened, self, name, self._getProjectFilesPath(), True)
                 
@@ -988,7 +1006,7 @@ class ProjectController(ConfigTreeNode, PLCControler):
                 for extension, name, editor in features.file_editors:
                     if extension not in extensions:
                         extensions.append(extension)
-                self._ProjectFilesView.SetEditableFileExtensions(extensions)
+                self._ProjectFilesView.SetEditableFileExtensions(extensions) 
                 
             if self._ProjectFilesView is not None:
                 self.AppFrame.EditProjectElement(self._ProjectFilesView, name)
@@ -1023,6 +1041,8 @@ class ProjectController(ConfigTreeNode, PLCControler):
                         editor = editors[editor_name]()
                         self._FileEditors[filepath] = editor(self.AppFrame.TabsOpened, self, name, self.AppFrame)
                         self._FileEditors[filepath].SetIcon(GetBitmap("FILE"))
+                        if isinstance(self._FileEditors[filepath], DebugViewer):
+                            self._FileEditors[filepath].SetDataProducer(self)
             
             if self._FileEditors.has_key(filepath):
                 editor = self._FileEditors[filepath]
@@ -1056,13 +1076,44 @@ class ProjectController(ConfigTreeNode, PLCControler):
         self._builder = None
         self.CompareLocalAndRemotePLC()
 
-    ############# Real PLC object access #############
+    def UpdatePLCLog(self, log_count):
+        if log_count :
+            to_console = []
+            for level, count, prev in zip(xrange(LogLevelsCount), log_count,self.previous_log_count):
+                if count is not None and prev != count:
+                    # XXX replace dump to console with dedicated log panel.
+                    dump_end = max( # request message sent after the last one we already got
+                        prev - 1 if prev is not None else -1,
+                        count - 100) # 100 is purely arbitrary number
+                        # dedicated panel should only ask for a small range, 
+                        # depending on how user navigate in the panel
+                        # and only ask for last one in follow mode
+                    for msgidx in xrange(count-1, dump_end,-1):
+                        answer = self._connector.GetLogMessage(level, msgidx)
+                        if answer is not None :
+                            msg, tick, tv_sec, tv_nsec = answer 
+                            to_console.insert(0,(
+                                (tv_sec, tv_nsec),
+                                '%d|%s.%9.9d|%s(%s)'%(
+                                    int(tick),
+                                    str(datetime.fromtimestamp(tv_sec)),
+                                    tv_nsec,
+                                    msg,
+                                    LogLevels[level])))
+                        else:
+                            break;
+                    self.previous_log_count[level] = count
+            if to_console:
+                to_console.sort()
+                self.logger.write("\n".join(zip(*to_console)[1]+('',)))
+
     def UpdateMethodsFromPLCStatus(self):
-        # Get PLC state : Running or Stopped
-        # TODO : use explicit status instead of boolean
         status = None
         if self._connector is not None:
-            status = self._connector.GetPLCstatus()
+            PLCstatus = self._connector.GetPLCstatus()
+            if PLCstatus is not None:
+                status, log_count = PLCstatus
+                self.UpdatePLCLog(log_count)
         if status is None:
             self._connector = None
             status = "Disconnected"
@@ -1082,20 +1133,17 @@ class ProjectController(ConfigTreeNode, PLCControler):
                                       ("_Disconnect", False)],
                    }.get(status,[]):
                 self.ShowMethod(*args)
+            {"Broken": self.logger.write_error,
+             None: lambda x: None}.get(
+                status, self.logger.write)(_("PLC state is \"%s\"\n")%_(status))
             self.previous_plcstate = status
-            return True
-        return False
+            if self.AppFrame is not None:
+                self.AppFrame.RefreshStatusToolBar()
     
     def PullPLCStatusProc(self, event):
         if self._connector is None:
             self.StatusTimer.Stop()
-        if self.UpdateMethodsFromPLCStatus():
-            
-            status = _(self.previous_plcstate)
-            {"Broken": self.logger.write_error,
-             None: lambda x: None}.get(
-                self.previous_plcstate, self.logger.write)(_("PLC is %s\n")%status)
-            self.AppFrame.RefreshStatusToolBar()
+        self.UpdateMethodsFromPLCStatus()
         
     def RegisterDebugVarToConnector(self):
         self.DebugTimer=None
@@ -1109,7 +1157,6 @@ class ProjectController(ConfigTreeNode, PLCControler):
                 if len(WeakCallableDict) == 0:
                     # Callable Dict is empty.
                     # This variable is not needed anymore!
-                    #print "Unused : " + IECPath
                     IECPathsToPop.append(IECPath)
                 elif IECPath != "__tick__":
                     # Convert 
@@ -1132,9 +1179,6 @@ class ProjectController(ConfigTreeNode, PLCControler):
                 self.TracedIECPath = []
                 self._connector.SetTraceVariablesList([])
             self.IECdebug_lock.release()
-            
-            #for IEC_path, IECdebug_data in self.IECdebug_datas.iteritems():
-            #    print IEC_path, IECdebug_data[0].keys()
 
     def ReArmDebugRegisterTimer(self):
         if self.DebugTimer is not None:
@@ -1179,7 +1223,6 @@ class ProjectController(ConfigTreeNode, PLCControler):
         return IECdebug_data[1]
 
     def UnsubscribeDebugIECVariable(self, IECPath, callableobj):
-        #print "Unsubscribe", IECPath, callableobj
         self.IECdebug_lock.acquire()
         IECdebug_data = self.IECdebug_datas.get(IECPath, None)
         if IECdebug_data is not None:
@@ -1231,7 +1274,6 @@ class ProjectController(ConfigTreeNode, PLCControler):
             WeakCallableDict, data_log, status, fvalue = data_tuple
             #data_log.append((debug_tick, value))
             for weakcallable,(args,kwargs) in WeakCallableDict.iteritems():
-                #print weakcallable, value, args, kwargs
                 function = getattr(weakcallable, function_name, None)
                 if function is not None:
                     if status == "Forced" and cargs[1] == fvalue:
@@ -1261,7 +1303,6 @@ class ProjectController(ConfigTreeNode, PLCControler):
             else:
                 plc_status = None
             debug_getvar_retry += 1
-            #print debug_tick, debug_vars
             if plc_status == "Started":
                 self.IECdebug_lock.acquire()
                 if len(debug_vars) == len(self.TracedIECPath):
@@ -1271,7 +1312,7 @@ class ProjectController(ConfigTreeNode, PLCControler):
                     for IECPath,value in zip(self.TracedIECPath, debug_vars):
                         if value is not None:
                             self.CallWeakcallables(IECPath, "NewValue", debug_tick, value)
-                    self.CallWeakcallables("__tick__", "NewDataAvailable")
+                    self.CallWeakcallables("__tick__", "NewDataAvailable", debug_tick)
                 self.IECdebug_lock.release()
                 if debug_getvar_retry == DEBUG_RETRIES_WARN:
                     self.logger.write(_("Waiting debugger to recover...\n"))
@@ -1299,6 +1340,8 @@ class ProjectController(ConfigTreeNode, PLCControler):
         self.DebugThread = None
 
     def _connect_debug(self): 
+        self.previous_plcstate = None
+        self.previous_log_count = [None]*LogLevelsCount
         if self.AppFrame:
             self.AppFrame.ResetGraphicViewers()
         self.RegisterDebugVarToConnector()
@@ -1331,7 +1374,7 @@ class ProjectController(ConfigTreeNode, PLCControler):
         wx.CallAfter(self.UpdateMethodsFromPLCStatus)
 
     def _Connect(self):
-        # don't accept re-connetion is already connected
+        # don't accept re-connetion if already connected
         if self._connector is not None:
             self.logger.write_error(_("Already connected. Please disconnect\n"))
             return
@@ -1396,17 +1439,18 @@ class ProjectController(ConfigTreeNode, PLCControler):
                 status = _(self.previous_plcstate)
             else:
                 status = ""
-            self.logger.write(_("PLC is %s\n")%status)
+
+            #self.logger.write(_("PLC is %s\n")%status)
             
             # Start the status Timer
             self.StatusTimer.Start(milliseconds=500, oneShot=False)
             
-            if self.previous_plcstate=="Started":
+            if self.previous_plcstate in ["Started","Stopped"]:
                 if self.DebugAvailable() and self.GetIECProgramsAndVariables():
-                    self.logger.write(_("Debug connect matching running PLC\n"))
+                    self.logger.write(_("Debugger ready\n"))
                     self._connect_debug()
                 else:
-                    self.logger.write_warning(_("Debug do not match PLC - stop/transfert/start to re-enable\n"))
+                    self.logger.write_warning(_("Debug does not match PLC - stop/transfert/start to re-enable\n"))
 
     def CompareLocalAndRemotePLC(self):
         if self._connector is None:
@@ -1477,6 +1521,8 @@ class ProjectController(ConfigTreeNode, PLCControler):
                     self.logger.write_error(_("Transfer failed\n"))
             else:
                 self.logger.write_error(_("No PLC to transfer (did build succeed ?)\n"))
+
+        self.previous_log_count = [None]*LogLevelsCount
 
         wx.CallAfter(self.UpdateMethodsFromPLCStatus)
 

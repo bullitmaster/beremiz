@@ -25,7 +25,8 @@
 import Pyro.core as pyro
 from threading import Timer, Thread, Lock, Semaphore
 import ctypes, os, commands, types, sys
-from targets.typemapping import SameEndianessTypeTranslator as TypeTranslator
+from targets.typemapping import LogLevelsDefault, LogLevelsCount, SameEndianessTypeTranslator as TypeTranslator
+
 
 if os.name in ("nt", "ce"):
     from _ctypes import LoadLibrary as dlopen
@@ -65,6 +66,8 @@ class PLCObject(pyro.ObjBase):
         self.statuschange = statuschange
         self.hmi_frame = None
         self.website = website
+        self._loading_error = None
+        self.python_threads_vars = None
         
         # Get the last transfered PLC if connector must be restart
         try:
@@ -78,6 +81,39 @@ class PLCObject(pyro.ObjBase):
     def StatusChange(self):
         if self.statuschange is not None:
             self.statuschange(self.PLCStatus)
+
+    def LogMessage(self, *args):
+        if len(args) == 2:
+            level, msg = args
+        else:
+            level = LogLevelsDefault
+            msg, = args
+        return self._LogMessage(level, msg, len(msg))
+
+
+    def GetLogCount(self, level):
+        if self._GetLogCount is not None :
+            return int(self._GetLogCount(level))
+        elif self._loading_error is not None and level==0:
+            return 1;
+
+    def GetLogMessage(self, level, msgid):
+        tick = ctypes.c_uint32()
+        tv_sec = ctypes.c_uint32()
+        tv_nsec = ctypes.c_uint32()
+        if self._GetLogMessage is not None:
+            maxsz = len(self._log_read_buffer)-1
+            sz = self._GetLogMessage(level, msgid, 
+                self._log_read_buffer, maxsz,
+                ctypes.byref(tick),
+                ctypes.byref(tv_sec),
+                ctypes.byref(tv_nsec))
+            if sz and sz <= maxsz:
+                self._log_read_buffer[sz] = '\x00'
+                return self._log_read_buffer.value,tick.value,tv_sec.value,tv_nsec.value
+        elif self._loading_error is not None and level==0:
+            return self._loading_error,0,0,0
+        return None
 
     def _GetMD5FileName(self):
         return os.path.join(self.workingdir, "lasttransferedPLC.md5")
@@ -105,7 +141,7 @@ class PLCObject(pyro.ObjBase):
             self._PythonIterator = getattr(self.PLClibraryHandle, "PythonIterator", None)
             if self._PythonIterator is not None:
                 self._PythonIterator.restype = ctypes.c_char_p
-                self._PythonIterator.argtypes = [ctypes.c_char_p]
+                self._PythonIterator.argtypes = [ctypes.c_char_p, ctypes.POINTER(ctypes.c_void_p)]
                 
                 self._stopPLC = self._stopPLC_real
             else:
@@ -113,7 +149,7 @@ class PLCObject(pyro.ObjBase):
                 # as a call that block pythonthread until StopPLC 
                 self.PythonIteratorLock = Lock()
                 self.PythonIteratorLock.acquire()
-                def PythonIterator(res):
+                def PythonIterator(res, blkid):
                     self.PythonIteratorLock.acquire()
                     self.PythonIteratorLock.release()
                     return None
@@ -145,10 +181,25 @@ class PLCObject(pyro.ObjBase):
 
             self._resumeDebug = self.PLClibraryHandle.resumeDebug
             self._resumeDebug.restype = None
+
+            self._GetLogCount = self.PLClibraryHandle.GetLogCount
+            self._GetLogCount.restype = ctypes.c_uint32
+            self._GetLogCount.argtypes = [ctypes.c_uint8]
+
+            self._LogMessage = self.PLClibraryHandle.LogMessage
+            self._LogMessage.restype = ctypes.c_int
+            self._LogMessage.argtypes = [ctypes.c_uint8, ctypes.c_char_p, ctypes.c_uint32]
             
+            self._log_read_buffer = ctypes.create_string_buffer(1<<14) #16K
+            self._GetLogMessage = self.PLClibraryHandle.GetLogMessage
+            self._GetLogMessage.restype = ctypes.c_uint32
+            self._GetLogMessage.argtypes = [ctypes.c_uint8, ctypes.c_uint32, ctypes.c_char_p, ctypes.c_uint32, ctypes.POINTER(ctypes.c_uint32), ctypes.POINTER(ctypes.c_uint32), ctypes.POINTER(ctypes.c_uint32)]
+
+            self._loading_error = None
             return True
         except:
-            PLCprint(traceback.format_exc())
+            self._loading_error = traceback.format_exc()
+            PLCprint(self._loading_error)
             return False
 
     def _FreePLC(self):
@@ -168,6 +219,9 @@ class PLCObject(pyro.ObjBase):
         self._suspendDebug = lambda x:-1
         self._resumeDebug = lambda:None
         self._PythonIterator = lambda:""
+        self._GetLogCount = None 
+        self._LogMessage = lambda l,m,s:PLCprint("OFF LOG :"+m)
+        self._GetLogMessage = None
         self.PLClibraryHandle = None
         # Unload library explicitely
         if getattr(self,"_PLClibraryHandle",None) is not None:
@@ -221,49 +275,58 @@ class PLCObject(pyro.ObjBase):
         self.StatusChange()
         self.StartSem.release()
         self.evaluator(self.PrepareRuntimePy)
-        res,cmd = "None","None"
+        res,cmd,blkid = "None","None",ctypes.c_void_p()
+        compile_cache={}
         while True:
-            #print "_PythonIterator(", res, ")",
-            cmd = self._PythonIterator(res)
-            #print " -> ", cmd
+            # print "_PythonIterator(", res, ")",
+            cmd = self._PythonIterator(res,blkid)
+            FBID = blkid.value 
+            # print " -> ", cmd, blkid
             if cmd is None:
                 break
             try :
-                res = str(self.evaluator(eval,cmd,self.python_threads_vars))
+                self.python_threads_vars["FBID"]=FBID
+                ccmd,AST =compile_cache.get(FBID, (None,None))
+                if ccmd is None or ccmd!=cmd:
+                    AST = compile(cmd, '<plc>', 'eval')
+                    compile_cache[FBID]=(cmd,AST)
+                result,exp = self.evaluator(eval,cmd,self.python_threads_vars)
+                if exp is not None: 
+                    raise(exp)
+                else:
+                    res=str(result)
+                self.python_threads_vars["FBID"]=None
             except Exception,e:
                 res = "#EXCEPTION : "+str(e)
-                PLCprint(res)
+                PLCprint(('*** Python eval EXCEPTION ***\n'+
+                          '| Function Block ID: %d\n'+
+                          '| Command : "%s"\n'+
+                          '| Exception : "%s"')%(FBID,cmd,str(e)))
         self.PLCStatus = "Stopped"
         self.StatusChange()
         self.evaluator(self.FinishRuntimePy)
     
     def StartPLC(self):
-        PLCprint("StartPLC")
         if self.CurrentPLCFilename is not None and self.PLCStatus == "Stopped":
             c_argv = ctypes.c_char_p * len(self.argv)
             error = None
-            if self._LoadNewPLC():
-                if self._startPLC(len(self.argv),c_argv(*self.argv)) == 0:
-                    self.StartSem=Semaphore(0)
-                    self.PythonThread = Thread(target=self.PythonThreadProc)
-                    self.PythonThread.start()
-                    self.StartSem.acquire()
-                else:
-                    error = "starting"
+            res = self._startPLC(len(self.argv),c_argv(*self.argv))
+            if res == 0:
+                self.StartSem=Semaphore(0)
+                self.PythonThread = Thread(target=self.PythonThreadProc)
+                self.PythonThread.start()
+                self.StartSem.acquire()
+                self.LogMessage("PLC started")
             else:
-                error = "loading"
-            if error is not None:
-                PLCprint("Problem %s PLC"%error)
+                self.LogMessage(_("Problem starting PLC : error %d" % res))
                 self.PLCStatus = "Broken"
                 self.StatusChange()
-                self._FreePLC()
             
     def StopPLC(self):
-        PLCprint("StopPLC")
         if self.PLCStatus == "Started":
+            self.LogMessage("PLC stopped")
             self._stopPLC()
             self.PythonThread.join()
-            self._FreePLC()
             return True
         return False
 
@@ -280,13 +343,17 @@ class PLCObject(pyro.ObjBase):
         return True
 
     def GetPLCstatus(self):
-        return self.PLCStatus
+        return self.PLCStatus, map(self.GetLogCount,xrange(LogLevelsCount))
     
     def NewPLC(self, md5sum, data, extrafiles):
-        PLCprint("NewPLC (%s)"%md5sum)
+        self.LogMessage("NewPLC (%s)"%md5sum)
         if self.PLCStatus in ["Stopped", "Empty", "Broken"]:
             NewFileName = md5sum + lib_ext
             extra_files_log = os.path.join(self.workingdir,"extra_files.txt")
+
+            self._FreePLC()
+            self.PLCStatus = "Empty"
+
             try:
                 os.remove(os.path.join(self.workingdir,
                                        self.CurrentPLCFilename))
@@ -316,11 +383,18 @@ class PLCObject(pyro.ObjBase):
                 # Store new PLC filename
                 self.CurrentPLCFilename = NewFileName
             except:
+                self.PLCStatus = "Broken"
+                self.StatusChange()
                 PLCprint(traceback.format_exc())
                 return False
-            if self.PLCStatus == "Empty":
+
+            if self._LoadNewPLC():
                 self.PLCStatus = "Stopped"
-            return True
+            else:
+                self._FreePLC()
+            self.StatusChange()
+
+            return self.PLCStatus == "Stopped"
         return False
 
     def MatchMD5(self, MD5):

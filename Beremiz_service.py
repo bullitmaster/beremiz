@@ -23,6 +23,7 @@
 #Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
 
 import os, sys, getopt
+from threading import Thread,Timer
 
 def usage():
     print """
@@ -291,11 +292,12 @@ if enablewx:
             TBMENU_CHANGE_WD = wx.NewId()
             TBMENU_QUIT = wx.NewId()
             
-            def __init__(self, pyroserver):
+            def __init__(self, pyroserver, level):
                 wx.TaskBarIcon.__init__(self)
                 self.pyroserver = pyroserver
                 # Set the image
                 self.UpdateIcon(None)
+                self.level = level
                 
                 # bind some events
                 self.Bind(wx.EVT_MENU, self.OnTaskBarStartPLC, id=self.TBMENU_START)
@@ -318,13 +320,16 @@ if enablewx:
                 menu = wx.Menu()
                 menu.Append(self.TBMENU_START, _("Start PLC"))
                 menu.Append(self.TBMENU_STOP, _("Stop PLC"))
-                menu.Append(self.TBMENU_CHANGE_NAME, _("Change Name"))
-                menu.Append(self.TBMENU_CHANGE_INTERFACE, _("Change IP of interface to bind"))
-                menu.Append(self.TBMENU_LIVE_SHELL, _("Launch a live Python shell"))
-                menu.Append(self.TBMENU_WXINSPECTOR, _("Launch WX GUI inspector"))
-                menu.Append(self.TBMENU_CHANGE_PORT, _("Change Port Number"))
+                if self.level==1:
+                    menu.AppendSeparator()
+                    menu.Append(self.TBMENU_CHANGE_NAME, _("Change Name"))
+                    menu.Append(self.TBMENU_CHANGE_INTERFACE, _("Change IP of interface to bind"))
+                    menu.Append(self.TBMENU_CHANGE_PORT, _("Change Port Number"))
+                    menu.Append(self.TBMENU_CHANGE_WD, _("Change working directory"))
+                    menu.AppendSeparator()
+                    menu.Append(self.TBMENU_LIVE_SHELL, _("Launch a live Python shell"))
+                    menu.Append(self.TBMENU_WXINSPECTOR, _("Launch WX GUI inspector"))
                 menu.AppendSeparator()
-                menu.Append(self.TBMENU_CHANGE_WD, _("Change working directory"))
                 menu.Append(self.TBMENU_QUIT, _("Quit"))
                 return menu
             
@@ -348,7 +353,7 @@ if enablewx:
             
             def OnTaskBarStopPLC(self, evt):
                 if self.pyroserver.plcobj is not None:
-                    self.pyroserver.plcobj.StopPLC()
+                    Thread(target=self.pyroserver.plcobj.StopPLC).start()
                 evt.Skip()
             
             def OnTaskBarChangeInterface(self, evt):
@@ -384,32 +389,31 @@ if enablewx:
                     self.pyroserver.Restart()
                 evt.Skip()
             
-            def OnTaskBarLiveShell(self, evt):
-                if self.pyroserver.plcobj is not None and self.pyroserver.plcobj.python_threads_vars is not None:
-                    from wx import py
-                    #frame = py.shell.ShellFrame(locals=self.pyroserver.plcobj.python_threads_vars)
-                    frame = py.crust.CrustFrame(locals=self.pyroserver.plcobj.python_threads_vars)
-                    frame.Show()
+            def _LiveShellLocals(self):
+                if self.pyroserver.plcobj is not None:
+                    return {"locals":self.pyroserver.plcobj.python_threads_vars}
                 else:
-                    wx.MessageBox(_("No running PLC"), _("Error"))
+                    return {}
+
+            def OnTaskBarLiveShell(self, evt):
+                from wx import py
+                frame = py.crust.CrustFrame(**self._LiveShellLocals())
+                frame.Show()
                 evt.Skip()
             
             def OnTaskBarWXInspector(self, evt):
                 # Activate the widget inspection tool
                 from wx.lib.inspection import InspectionTool
                 if not InspectionTool().initialized:
-                    InspectionTool().Init(locals=self.pyroserver.plcobj.python_threads_vars)
-                
-                # Find a widget to be selected in the tree.  Use either the
-                # one under the cursor, if any, or this frame.
-                wnd = wx.FindWindowAtPointer()
-                if not wnd:
-                    wnd = wx.GetApp()
+                    InspectionTool().Init(**self._LiveShellLocals())
+
+                wnd = wx.GetApp()
                 InspectionTool().Show(wnd, True)
+
                 evt.Skip()
             
             def OnTaskBarQuit(self, evt):
-                self.pyroserver.Quit()
+                Thread(target=self.pyroserver.Quit).start()
                 self.RemoveIcon()
                 wx.CallAfter(wx.GetApp().Exit)
                 evt.Skip()
@@ -429,8 +433,12 @@ import Pyro.core as pyro
 if not os.path.isdir(WorkingDir):
     os.mkdir(WorkingDir)
 
-def default_evaluator(callable, *args, **kwargs):
-    return callable(*args,**kwargs)
+def default_evaluator(tocall, *args, **kwargs):
+    try:
+        res=(tocall(*args,**kwargs), None)
+    except Exception,exp:
+        res=(None, exp)
+    return res
 
 class Server():
     def __init__(self, servicename, ip_addr, port, workdir, argv, autostart=False, statuschange=None, evaluator=default_evaluator, website=None):
@@ -676,32 +684,29 @@ else:
 if havewx:
     from threading import Semaphore
     wx_eval_lock = Semaphore(0)
-    mythread = currentThread()
-    
+    main_thread = currentThread()
+
     def statuschange(status):
         wx.CallAfter(taskbar_instance.UpdateIcon,status)
         
-    eval_res = None
-    def wx_evaluator(callable, *args, **kwargs):
-        global eval_res
-        try:
-            eval_res=callable(*args,**kwargs)
-        except Exception,e:
-            PLCprint("#EXCEPTION : "+str(e))
-        finally:
-            wx_eval_lock.release()
+    def wx_evaluator(obj, *args, **kwargs):
+        tocall,args,kwargs = obj.call
+        obj.res = default_evaluator(tocall, *args, **kwargs)
+        wx_eval_lock.release()
         
-    def evaluator(callable, *args, **kwargs):
-        # call directly the callable function if call from the wx mainloop (avoid dead lock) 
-        if(mythread == currentThread()):
-            callable(*args,**kwargs)
+    def evaluator(tocall, *args, **kwargs):
+        global main_thread
+        if(main_thread == currentThread()):
+            # avoid dead lock if called from the wx mainloop 
+            return default_evaluator(tocall, *args, **kwargs)
         else:
-            wx.CallAfter(wx_evaluator,callable,*args,**kwargs)
+            o=type('',(object,),dict(call=(tocall, args, kwargs), res=None))
+            wx.CallAfter(wx_evaluator,o)
             wx_eval_lock.acquire()
-        return eval_res
+            return o.res
     
     pyroserver = Server(servicename, given_ip, port, WorkingDir, argv, autostart, statuschange, evaluator, website)
-    taskbar_instance = BeremizTaskBarIcon(pyroserver)
+    taskbar_instance = BeremizTaskBarIcon(pyroserver, enablewx)
 else:
     pyroserver = Server(servicename, given_ip, port, WorkingDir, argv, autostart, website=website)
 

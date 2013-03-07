@@ -3,7 +3,7 @@ import wx
 
 from subindextable import EditingPanel
 from nodeeditor import NodeEditorTemplate
-from ConfTreeNodeEditor import ConfTreeNodeEditor
+from editors.ConfTreeNodeEditor import ConfTreeNodeEditor
 
 [ID_SLAVEEDITORCONFNODEMENUNODEINFOS, ID_SLAVEEDITORCONFNODEMENUDS301PROFILE,
  ID_SLAVEEDITORCONFNODEMENUDS302PROFILE, ID_SLAVEEDITORCONFNODEMENUDSOTHERPROFILE,
@@ -17,8 +17,12 @@ from ConfTreeNodeEditor import ConfTreeNodeEditor
 
 class SlaveEditor(ConfTreeNodeEditor, NodeEditorTemplate):
     
-    def _init_ConfNodeEditor(self, prnt):
-        self.ConfNodeEditor = EditingPanel(prnt, self, self.Controler, self.Editable)
+    CONFNODEEDITOR_TABS = [
+        (_("CANOpen slave"), "_create_SlaveNodeEditor")]
+    
+    def _create_SlaveNodeEditor(self, prnt):
+        self.SlaveNodeEditor = EditingPanel(prnt, self, self.Controler, self.Editable)
+        return self.SlaveNodeEditor
         
     def __init__(self, parent, controler, window, editable=True):
         self.Editable = editable
@@ -46,8 +50,7 @@ class SlaveEditor(ConfTreeNodeEditor, NodeEditorTemplate):
             else:
                 other_profile_text = _('Other Profile')
             
-            return [(wx.ITEM_NORMAL, (_('Node infos'), ID_SLAVEEDITORCONFNODEMENUNODEINFOS, '', self.OnNodeInfosMenu)),
-                    (wx.ITEM_NORMAL, (_('DS-301 Profile'), ID_SLAVEEDITORCONFNODEMENUDS301PROFILE, '', self.OnCommunicationMenu)),
+            return [(wx.ITEM_NORMAL, (_('DS-301 Profile'), ID_SLAVEEDITORCONFNODEMENUDS301PROFILE, '', self.OnCommunicationMenu)),
                     (wx.ITEM_NORMAL, (_('DS-302 Profile'), ID_SLAVEEDITORCONFNODEMENUDS302PROFILE, '', self.OnOtherCommunicationMenu)),
                     (wx.ITEM_NORMAL, (other_profile_text, ID_SLAVEEDITORCONFNODEMENUDSOTHERPROFILE, '', self.OnEditProfileMenu)),
                     (wx.ITEM_SEPARATOR, None),
@@ -55,11 +58,12 @@ class SlaveEditor(ConfTreeNodeEditor, NodeEditorTemplate):
         return []
     
     def RefreshConfNodeMenu(self, confnode_menu):
-        confnode_menu.Enable(ID_SLAVEEDITORCONFNODEMENUDSOTHERPROFILE, False)
+        if self.Editable:
+            confnode_menu.Enable(ID_SLAVEEDITORCONFNODEMENUDSOTHERPROFILE, False)
 
     def RefreshView(self):
         ConfTreeNodeEditor.RefreshView(self)
-        self.ConfNodeEditor.RefreshIndexList()
+        self.SlaveNodeEditor.RefreshIndexList()
 
     def RefreshCurrentIndexList(self):
         self.RefreshView()
@@ -73,6 +77,22 @@ class SlaveEditor(ConfTreeNodeEditor, NodeEditorTemplate):
 class MasterViewer(SlaveEditor):
     SHOW_PARAMS = False
 
-    def __init__(self, parent, controler, window):
+    def __init__(self, parent, controler, window, tagname):
         SlaveEditor.__init__(self, parent, controler, window, False)
-
+    
+        self.TagName = tagname
+    
+    def GetTagName(self):
+        return self.TagName
+    
+    def GetCurrentNodeId(self):
+        return None
+    
+    def GetInstancePath(self):
+        return self.Controler.CTNFullName() + ".generated_master"
+    
+    def GetTitle(self):
+        return self.GetInstancePath()
+        
+    def IsViewing(self, tagname):
+        return self.GetInstancePath() == tagname

@@ -5,13 +5,13 @@ import types
 import wx
 import wx.lib.buttons
 
-from controls import EditorPanel
+from EditorPanel import EditorPanel
 
-from PLCOpenEditor import TITLE, FILEMENU, PROJECTTREE, PAGETITLES
+from IDEFrame import TITLE, FILEMENU, PROJECTTREE, PAGETITLES
 
-from util.TextCtrlAutoComplete import TextCtrlAutoComplete
-from util.BrowseValuesLibraryDialog import BrowseValuesLibraryDialog
-from utils.BitmapLibrary import GetBitmap
+from controls import TextCtrlAutoComplete
+from dialogs import BrowseValuesLibraryDialog
+from util.BitmapLibrary import GetBitmap
 
 if wx.Platform == '__WXMSW__':
     faces = { 'times': 'Times New Roman',
@@ -143,19 +143,42 @@ class ConfTreeNodeEditor(EditorPanel):
     
     SHOW_BASE_PARAMS = True
     SHOW_PARAMS = True
-    
-    def _init_ConfNodeEditor(self, prnt):
-        self.ConfNodeEditor = None
+    CONFNODEEDITOR_TABS = []
     
     def _init_Editor(self, parent):
-        self.Editor = wx.SplitterWindow(parent,
-              style=wx.SUNKEN_BORDER|wx.SP_3D)
-        self.SetNeedUpdating(True)
-        self.SetMinimumPaneSize(1)
+        tabs_num = len(self.CONFNODEEDITOR_TABS)
+        if self.SHOW_PARAMS:
+            tabs_num += 1
+            
+        if tabs_num > 1:
+            self.Editor = wx.Panel(parent, 
+                style=wx.SUNKEN_BORDER|wx.SP_3D)
+            
+            main_sizer = wx.BoxSizer(wx.VERTICAL)
+            
+            self.ConfNodeNoteBook = wx.Notebook(self.Editor)
+            parent = self.ConfNodeNoteBook
+            main_sizer.AddWindow(self.ConfNodeNoteBook, 1, flag=wx.GROW)
+            
+            self.Editor.SetSizer(main_sizer)
+        else:
+            self.ConfNodeNoteBook = None
+            self.Editor = None
+        
+        for title, create_func_name in self.CONFNODEEDITOR_TABS:
+            editor = getattr(self, create_func_name)(parent)
+            if self.ConfNodeNoteBook is not None:
+                self.ConfNodeNoteBook.AddPage(editor, title)
+            else:
+                self.Editor = editor
         
         if self.SHOW_PARAMS:
-            self.ParamsEditor = wx.ScrolledWindow(self.Editor, 
-                  style=wx.TAB_TRAVERSAL|wx.SUNKEN_BORDER|wx.HSCROLL|wx.VSCROLL)
+            
+            panel_style = wx.TAB_TRAVERSAL|wx.HSCROLL|wx.VSCROLL
+            if self.ConfNodeNoteBook is None:
+                panel_style |= wx.SUNKEN_BORDER
+            self.ParamsEditor = wx.ScrolledWindow(parent, 
+                  style=panel_style)
             self.ParamsEditor.SetBackgroundColour(WINDOW_COLOUR)
             self.ParamsEditor.Bind(wx.EVT_SIZE, self.OnWindowResize)
             self.ParamsEditor.Bind(wx.EVT_MOUSEWHEEL, self.OnMouseWheel)
@@ -221,21 +244,13 @@ class ConfTreeNodeEditor(EditorPanel):
                   flag=wx.LEFT|wx.RIGHT|wx.BOTTOM)
             
             self.RefreshConfNodeParamsSizer()
+        
+            if self.ConfNodeNoteBook is not None:
+                self.ConfNodeNoteBook.AddPage(self.ParamsEditor, _("Config"))
+            else:
+                self.Editor = self.ParamsEditor
         else:
             self.ParamsEditor = None
-        
-        self._init_ConfNodeEditor(self.Editor)
-            
-        if self.ConfNodeEditor is not None:
-            if self.ParamsEditor is not None:
-                min_size = self.ParamsEditorSizer.GetMinSize()
-                self.Editor.SplitHorizontally(self.ParamsEditor, 
-                                              self.ConfNodeEditor, 
-                                              min(min_size.height, 200))
-            else:
-                self.Editor.Initialize(self.ConfNodeEditor)
-        elif self.ParamsEditor is not None:
-            self.Editor.Initialize(self.ParamsEditor)
     
     def __init__(self, parent, controler, window, tagname=""):
         EditorPanel.__init__(self, parent, tagname, window, controler)
@@ -277,6 +292,7 @@ class ConfTreeNodeEditor(EditorPanel):
                 self.ConfNodeName.ChangeValue(self.Controler.MandatoryParams[1].getName())
                 self.RefreshIECChannelControlsState()
             self.RefreshConfNodeParamsSizer()
+            self.RefreshScrollbars()
     
     def EnableScrolling(self, enable):
         self.ScrollingEnabled = enable
@@ -377,7 +393,7 @@ class ConfTreeNodeEditor(EditorPanel):
                         boxsizer.AddSizer(browse_boxsizer)
                         
                         textctrl = wx.TextCtrl(self.ParamsEditor, 
-                              size=wx.Size(275, 25), style=wx.TE_READONLY)
+                              size=wx.Size(275, -1), style=wx.TE_READONLY)
                         if element_infos["value"] is not None:
                             textctrl.SetValue(element_infos["value"][0])
                             value_infos = element_infos["value"][1]
@@ -394,7 +410,7 @@ class ConfTreeNodeEditor(EditorPanel):
                                     button)
                     else:
                         combobox = wx.ComboBox(self.ParamsEditor, 
-                              size=wx.Size(300, 28), style=wx.CB_READONLY)
+                              size=wx.Size(300, -1), style=wx.CB_READONLY)
                         boxsizer.AddWindow(combobox)
                         
                         if element_infos["use"] == "optional":
@@ -429,7 +445,7 @@ class ConfTreeNodeEditor(EditorPanel):
                     if "max" in element_infos["type"]:
                         scmax = element_infos["type"]["max"]
                     spinctrl = wx.SpinCtrl(self.ParamsEditor, 
-                          size=wx.Size(300, 25), style=wx.SP_ARROW_KEYS|wx.ALIGN_RIGHT)
+                          size=wx.Size(300, -1), style=wx.SP_ARROW_KEYS|wx.ALIGN_RIGHT)
                     spinctrl.SetRange(scmin, scmax)
                     boxsizer.AddWindow(spinctrl)
                     if element_infos["value"] is not None:
@@ -455,7 +471,7 @@ class ConfTreeNodeEditor(EditorPanel):
                             scmin = -(2**31)
                         scmax = 2**31-1
                         spinctrl = wx.SpinCtrl(self.ParamsEditor, 
-                              size=wx.Size(300, 25), style=wx.SP_ARROW_KEYS|wx.ALIGN_RIGHT)
+                              size=wx.Size(300, -1), style=wx.SP_ARROW_KEYS|wx.ALIGN_RIGHT)
                         spinctrl.SetRange(scmin, scmax)
                         boxsizer.AddWindow(spinctrl)
                         if element_infos["value"] is not None:
@@ -471,7 +487,7 @@ class ConfTreeNodeEditor(EditorPanel):
                                                         appframe=self, 
                                                         choices=choices, 
                                                         element_path=element_path,
-                                                        size=wx.Size(300, 25))
+                                                        size=wx.Size(300, -1))
                         
                         boxsizer.AddWindow(textctrl)
                         if element_infos["value"] is not None:
@@ -529,7 +545,10 @@ class ConfTreeNodeEditor(EditorPanel):
         def OnTextCtrlChanged(event):
             res = self.SetConfNodeParamsAttribute(path, textctrl.GetValue())
             if res != textctrl.GetValue():
-                textctrl.ChangeValue(res)
+                if isinstance(textctrl, wx.SpinCtrl):
+                    textctrl.SetValue(res)
+                else:
+                    textctrl.ChangeValue(res)
             if refresh:
                 wx.CallAfter(self.ParentWindow._Refresh, TITLE, FILEMENU, PROJECTTREE, PAGETITLES)
                 wx.CallAfter(self.ParentWindow.SelectProjectTreeItem, self.GetTagName())
@@ -555,7 +574,7 @@ class ConfTreeNodeEditor(EditorPanel):
             event.Skip()
         return OnBrowseButton
     
-    def OnWindowResize(self, event):
+    def RefreshScrollbars(self):
         self.ParamsEditor.GetBestSize()
         xstart, ystart = self.ParamsEditor.GetViewStart()
         window_size = self.ParamsEditor.GetClientSize()
@@ -565,6 +584,9 @@ class ConfTreeNodeEditor(EditorPanel):
         self.ParamsEditor.Scroll(posx, posy)
         self.ParamsEditor.SetScrollbars(SCROLLBAR_UNIT, SCROLLBAR_UNIT, 
                 maxx / SCROLLBAR_UNIT, maxy / SCROLLBAR_UNIT, posx, posy)
+    
+    def OnWindowResize(self, event):
+        self.RefreshScrollbars()
         event.Skip()
     
     def OnMouseWheel(self, event):

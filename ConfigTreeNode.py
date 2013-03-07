@@ -15,7 +15,7 @@ from xmlclass import GenerateClassesFromXSDstring
 from util.misc import GetClassImporter
 
 from PLCControler import PLCControler, LOCATION_CONFNODE
-from ConfTreeNodeEditor import ConfTreeNodeEditor
+from editors.ConfTreeNodeEditor import ConfTreeNodeEditor
 
 _BaseParamsClass = GenerateClassesFromXSDstring("""<?xml version="1.0" encoding="ISO-8859-1" ?>
         <xsd:schema xmlns:xsd="http://www.w3.org/2001/XMLSchema">
@@ -136,8 +136,9 @@ class ConfigTreeNode:
         if path == "BaseParams.IEC_Channel":
             old_leading = ".".join(map(str, self.GetCurrentLocation()))
             new_value = self.FindNewIEC_Channel(value)
-            new_leading = ".".join(map(str, self.CTNParent.GetCurrentLocation() + (new_value,)))
-            self.GetCTRoot().UpdateProjectVariableLocation(old_leading, new_leading)
+            if new_value != value:
+                new_leading = ".".join(map(str, self.CTNParent.GetCurrentLocation() + (new_value,)))
+                self.GetCTRoot().UpdateProjectVariableLocation(old_leading, new_leading)
             return new_value, True
         elif path == "BaseParams.Name":
             res = self.FindNewName(value)
@@ -194,6 +195,18 @@ class ConfigTreeNode:
         shutil.copytree(src_CTNPath, self.CTNPath)
         return True
 
+    def CTNGlobalInstances(self):
+        """
+        @return: [(instance_name, instance_type),...]
+        """
+        return []
+    
+    def _GlobalInstances(self):
+        instances = self.CTNGlobalInstances()
+        for CTNChild in self.IECSortedChildren():
+            instances.extend(CTNChild._GlobalInstances())
+        return instances
+    
     def CTNGenerate_C(self, buildpath, locations):
         """
         Generate C code
@@ -352,9 +365,13 @@ class ConfigTreeNode:
 
         # Find a free name, eventually appending digit
         res = DesiredName
+        if DesiredName.endswith("_0"):
+            BaseDesiredName = DesiredName[:-2]
+        else:
+            BaseDesiredName = DesiredName
         suffix = 1
         while res in AllNames:
-            res = "%s-%d"%(DesiredName, suffix)
+            res = "%s_%d"%(BaseDesiredName, suffix)
             suffix += 1
         
         # Get old path
@@ -404,6 +421,9 @@ class ConfigTreeNode:
         # Finally set IEC Channel
         self.BaseParams.setIEC_Channel(res)
         return res
+
+    def GetContextualMenuItems(self):
+        return None
 
     def _OpenView(self, name=None, onlyopened=False):
         if self.EditorType is not None:

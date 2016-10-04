@@ -1,0 +1,11 @@
+.project
+
+syntax: regexp
+^tests/.*/build$
+^.idea/.*
+syntax: regexp
+^.*\.pyc$
+syntax: regexp
+^.*~$
+syntax: regexp
+^.*\.swp$
